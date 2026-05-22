@@ -19,7 +19,8 @@ export async function download(params: CobaltDownloadParams, apiPool: ApiServer[
     return await tryDownload(params, apiPool)
 }
 
-export type DownloadedMedia = { file: DownloadedMediaContent, filename?: string }
+export type CobaltMediaTypeHint = "video" | "audio" | "photo" | "gif"
+export type DownloadedMedia = { file: DownloadedMediaContent, filename?: string, typeHint?: CobaltMediaTypeHint }
 async function downloadResolvedMedia(link: ResolvedMedia, api: ApiServer): Promise<Result<DownloadedMedia, Text>> {
     if (api.unsafe && !(await safeUrlSchema.safeParseAsync(link.url)).success)
         return error(literal("unsafe url"))
@@ -29,19 +30,32 @@ async function downloadResolvedMedia(link: ResolvedMedia, api: ApiServer): Promi
     return ok({
         file: file.result,
         filename: link.filename,
+        typeHint: link.typeHint,
     })
 }
 
-type ResolvedMedia = { url: string, filename?: string }
+type ResolvedMedia = { url: string, filename?: string, typeHint?: CobaltMediaTypeHint }
 function resolveMedia(link: SuccessfulCobaltMediaResponse, audio?: boolean): ResolvedMedia[] {
     if (link.status === "picker") {
         if (audio && link.audio) {
             const source = new URL(link.audio)
-            return [{ url: link.audio, filename: source.pathname.split("/").at(-1) }]
+            return [{
+                url: link.audio,
+                filename: source.pathname.split("/").at(-1),
+                typeHint: "audio",
+            }]
         }
-        return link.picker.map(p => ({ url: p.url, filename: new URL(p.url).pathname.split("/").at(-1) }))
+        return link.picker.map(p => ({
+            url: p.url,
+            filename: new URL(p.url).pathname.split("/").at(-1),
+            typeHint: p.type,
+        }))
     }
-    return [{ url: link.url, filename: link.filename }]
+    return [{
+        url: link.url,
+        filename: link.filename,
+        typeHint: audio ? "audio" : "video",
+    }]
 }
 
 type DownloadFailure = { reason: Text, api: ApiServer }

@@ -4,7 +4,7 @@ import type { GeneralTrack, ImageTrack, VideoTrack } from "mediainfo.js"
 import { CallbackDataBuilder } from "@mtcute/dispatcher"
 import mediaInfoFactory from "mediainfo.js"
 
-import type { ApiServer, CobaltDownloadParams } from "@/core/data/cobalt"
+import type { ApiServer, CobaltDownloadParams, CobaltMediaTypeHint } from "@/core/data/cobalt"
 import type { DownloadedMediaContent } from "@/core/data/cobalt/tunnel"
 import type { MediaRequest } from "@/core/data/request"
 import { finishRequest, outputOptions } from "@/core/data/request"
@@ -32,8 +32,44 @@ type AnalysisResult = {
     type: "video" | "audio" | "photo" | "document",
     isAnimated?: boolean,
 }
-async function analyze(buffer: DownloadedMediaContent): Promise<AnalysisResult> {
+function typeHintToAnalysis(typeHint?: CobaltMediaTypeHint): AnalysisResult | null {
+    if (!typeHint)
+        return null
+    if (typeHint === "gif") {
+        return {
+            type: "video",
+            isAnimated: true,
+        }
+    }
+    return { type: typeHint }
+}
+
+function hintFromFilename(fileName?: string): CobaltMediaTypeHint | null {
+    const extension = fileName?.split(".").at(-1)?.toLowerCase()
+    if (!extension)
+        return null
+    if (["jpg", "jpeg", "png", "webp"].includes(extension))
+        return "photo"
+    if (extension === "gif")
+        return "gif"
+    if (["mp3", "m4a", "aac", "ogg", "opus", "wav", "flac"].includes(extension))
+        return "audio"
+    if (["mp4", "mkv", "webm", "mov", "avi"].includes(extension))
+        return "video"
+    return null
+}
+
+function getFallbackAnalysis(typeHint?: CobaltMediaTypeHint, fileName?: string): AnalysisResult {
+    return (
+        typeHintToAnalysis(typeHint)
+        ?? typeHintToAnalysis(hintFromFilename(fileName) ?? undefined)
+        ?? { type: "document" }
+    )
+}
+
+async function analyze(buffer: DownloadedMediaContent, fileName?: string, typeHint?: CobaltMediaTypeHint): Promise<AnalysisResult> {
     let mediainfo: Awaited<ReturnType<typeof mediaInfoFactory>> | null = null
+    const fallback = getFallbackAnalysis(typeHint, fileName)
     try {
         mediainfo = await mediaInfoFactory()
         const res = await mediainfo.analyzeData(
@@ -41,15 +77,15 @@ async function analyze(buffer: DownloadedMediaContent): Promise<AnalysisResult> 
             (size, offset) => buffer.slice(offset, offset + size),
         )
         if (!res.media)
-            return { type: "document" }
+            return fallback
         const generalData = res.media.track.find((t): t is GeneralTrack => t["@type"] === "General")
         if (!generalData)
-            return { type: "document" }
+            return fallback
 
         if (generalData.VideoCount) {
             const videoData = res.media.track.find((t): t is VideoTrack => t["@type"] === "Video")!
             if (!videoData)
-                return { type: "document" }
+                return fallback
             return {
                 type: "video",
                 duration: generalData.Duration,
@@ -68,7 +104,7 @@ async function analyze(buffer: DownloadedMediaContent): Promise<AnalysisResult> 
         if (generalData.ImageCount) {
             const imageData = res.media.track.find((t): t is ImageTrack => t["@type"] === "Image")
             if (!imageData)
-                return { type: "document" }
+                return fallback
             if (imageData.Format === "GIF") {
                 return {
                     type: "video",
@@ -85,16 +121,21 @@ async function analyze(buffer: DownloadedMediaContent): Promise<AnalysisResult> 
             }
         }
 
-        return { type: "document" }
+        return fallback
     } catch {
-        return { type: "document" }
+        return fallback
     } finally {
         mediainfo?.close()
     }
 }
 
-async function fileToInputMedia(file: DownloadedMediaContent, fileName?: string, sendAsFile?: boolean): Promise<InputMediaLike> {
-    const analyzedData: AnalysisResult = sendAsFile ? { type: "document" } : await analyze(file)
+async function fileToInputMedia(
+    file: DownloadedMediaContent,
+    fileName?: string,
+    sendAsFile?: boolean,
+    typeHint?: CobaltMediaTypeHint,
+): Promise<InputMediaLike> {
+    const analyzedData: AnalysisResult = sendAsFile ? { type: "document" } : await analyze(file, fileName, typeHint)
     // FIXME: hack around mtcute limitation, a better solution should be implemented
     const fixedFilename = fileName?.endsWith(".jpeg") ? `${fileName.slice(0, -5)}.jpg` : fileName
     return {
@@ -134,6 +175,8 @@ export async function handleMediaDownload(outputType: string, request: MediaRequ
     if (!res.success)
         return res
 
-    const attachments = await Promise.all(res.result.map(f => fileToInputMedia(f.file, f.filename, settings.sendAsFile === 1)))
+    const attachments = await Promise.all(res.result.map(f =>
+        fileToInputMedia(f.file, f.filename, settings.sendAsFile === 1, f.typeHint),
+    ))
     return ok(attachments)
 }
