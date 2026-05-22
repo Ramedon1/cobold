@@ -33,8 +33,9 @@ type AnalysisResult = {
     isAnimated?: boolean,
 }
 async function analyze(buffer: DownloadedMediaContent): Promise<AnalysisResult> {
-    const mediainfo = await mediaInfoFactory()
+    let mediainfo: Awaited<ReturnType<typeof mediaInfoFactory>> | null = null
     try {
+        mediainfo = await mediaInfoFactory()
         const res = await mediainfo.analyzeData(
             buffer.byteLength,
             (size, offset) => buffer.slice(offset, offset + size),
@@ -85,8 +86,10 @@ async function analyze(buffer: DownloadedMediaContent): Promise<AnalysisResult> 
         }
 
         return { type: "document" }
+    } catch {
+        return { type: "document" }
     } finally {
-        mediainfo.close()
+        mediainfo?.close()
     }
 }
 
